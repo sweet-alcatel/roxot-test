@@ -16,3 +16,7 @@ aggregate:
 stats:
 	curl "http://127.0.0.1:18080/api/daily-stats?date=2026-08-07&placement_id=placement-video-main"
 
+
+test:
+	docker run --rm -v "$(PWD)/go-stat":/src -w /src golang:1.22-alpine go test ./...
+
