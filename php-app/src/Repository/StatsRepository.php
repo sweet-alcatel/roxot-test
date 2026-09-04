@@ -18,9 +18,11 @@ final class StatsRepository
         $where = ['ds.stat_date = :date'];
         $params = ['date' => $date];
 
-        if (!empty($query['placement'])) {
+        $placementId = trim((string) ($query['placement_id'] ?? ''));
+
+        if ($placementId !== '') {
             $where[] = 'ds.placement_id = :placement_id';
-            $params['placement_id'] = $query['placement'];
+            $params['placement_id'] = $placementId;
         }
 
         $sql = sprintf(
