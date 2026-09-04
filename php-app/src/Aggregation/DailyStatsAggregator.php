@@ -4,9 +4,10 @@ declare(strict_types=1);
 
 namespace App\Aggregation;
 
+use App\Timezone;
 use DateInterval;
 use DateTimeImmutable;
-use DateTimeZone;
+use InvalidArgumentException;
 use PDO;
 use Throwable;
 
@@ -17,7 +18,7 @@ final class DailyStatsAggregator
     }
     public function aggregate(string $date): int
     {
-        $start = new DateTimeImmutable($date . ' 00:00:00', new DateTimeZone('UTC'));
+        $start = $this->startOfBusinessDay($date);
         $end = $start->add(new DateInterval('P1D'));
 
         $select = $this->pdo->prepare(
@@ -72,6 +73,19 @@ final class DailyStatsAggregator
         }
 
         return count($rows);
+    }
+
+    private function startOfBusinessDay(string $date): DateTimeImmutable
+    {
+        $start = DateTimeImmutable::createFromFormat('!Y-m-d', $date, Timezone::app());
+
+        if ($start === false || $start->format('Y-m-d') !== $date) {
+            throw new InvalidArgumentException(
+                sprintf('Ожидалась дата в формате YYYY-MM-DD, получено: "%s"', $date)
+            );
+        }
+
+        return $start;
     }
 
     private function deleteStaleRows(string $date, array $placementIds): void

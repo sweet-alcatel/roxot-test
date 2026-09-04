@@ -5,6 +5,7 @@ declare(strict_types=1);
 
 use App\Aggregation\DailyStatsAggregator;
 use App\Database;
+use App\Timezone;
 
 require dirname(__DIR__) . '/src/bootstrap.php';
 
@@ -52,7 +53,7 @@ $command = $argv[1] ?? 'help';
 $pdo = Database::connect();
 
 if ($command === 'aggregate:daily') {
-    $date = $argv[2] ?? (new DateTimeImmutable('yesterday'))->format('Y-m-d');
+    $date = $argv[2] ?? (new DateTimeImmutable('yesterday', Timezone::app()))->format('Y-m-d');
     $count = (new DailyStatsAggregator($pdo))->aggregate($date);
 
     echo sprintf("Aggregated %d placement row(s) for %s\n", $count, $date);

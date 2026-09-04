@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace App\Repository;
 
+use App\Timezone;
+use DateTimeImmutable;
 use PDO;
 
 final class StatsRepository
@@ -14,7 +16,7 @@ final class StatsRepository
 
     public function findDailyStats(array $query): array
     {
-        $date = $query['date'] ?? date('Y-m-d');
+        $date = $query['date'] ?? (new DateTimeImmutable('now', Timezone::app()))->format('Y-m-d');
         $where = ['ds.stat_date = :date'];
         $params = ['date' => $date];
 
