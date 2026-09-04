@@ -8,13 +8,13 @@ use DateInterval;
 use DateTimeImmutable;
 use DateTimeZone;
 use PDO;
+use Throwable;
 
 final class DailyStatsAggregator
 {
     public function __construct(private PDO $pdo)
     {
     }
-
     public function aggregate(string $date): int
     {
         $start = new DateTimeImmutable($date . ' 00:00:00', new DateTimeZone('UTC'));
@@ -38,22 +38,59 @@ final class DailyStatsAggregator
         ]);
 
         $rows = $select->fetchAll();
-        $insert = $this->pdo->prepare(
+
+        $upsert = $this->pdo->prepare(
             'INSERT INTO daily_stats (stat_date, placement_id, impressions, clicks, revenue_cents, updated_at)
-             VALUES (:stat_date, :placement_id, :impressions, :clicks, :revenue_cents, now())'
+             VALUES (:stat_date, :placement_id, :impressions, :clicks, :revenue_cents, now())
+             ON CONFLICT (stat_date, placement_id) DO UPDATE SET
+                 impressions = EXCLUDED.impressions,
+                 clicks = EXCLUDED.clicks,
+                 revenue_cents = EXCLUDED.revenue_cents,
+                 updated_at = now()'
         );
 
-        foreach ($rows as $row) {
-            $insert->execute([
-                'stat_date' => $date,
-                'placement_id' => $row['placement_id'],
-                'impressions' => (int) $row['impressions'],
-                'clicks' => (int) $row['clicks'],
-                'revenue_cents' => (int) $row['revenue_cents'],
-            ]);
+        $this->pdo->beginTransaction();
+
+        try {
+            foreach ($rows as $row) {
+                $upsert->execute([
+                    'stat_date' => $date,
+                    'placement_id' => $row['placement_id'],
+                    'impressions' => (int) $row['impressions'],
+                    'clicks' => (int) $row['clicks'],
+                    'revenue_cents' => (int) $row['revenue_cents'],
+                ]);
+            }
+
+            $this->deleteStaleRows($date, array_column($rows, 'placement_id'));
+
+            $this->pdo->commit();
+        } catch (Throwable $exception) {
+            $this->pdo->rollBack();
+
+            throw $exception;
         }
 
         return count($rows);
     }
-}
 
+    private function deleteStaleRows(string $date, array $placementIds): void
+    {
+        if ($placementIds === []) {
+            $statement = $this->pdo->prepare('DELETE FROM daily_stats WHERE stat_date = :stat_date');
+            $statement->execute(['stat_date' => $date]);
+
+            return;
+        }
+
+        $placeholders = implode(', ', array_fill(0, count($placementIds), '?'));
+
+        $statement = $this->pdo->prepare(
+            "DELETE FROM daily_stats
+             WHERE stat_date = ?
+               AND placement_id NOT IN ($placeholders)"
+        );
+
+        $statement->execute([$date, ...$placementIds]);
+    }
+}
