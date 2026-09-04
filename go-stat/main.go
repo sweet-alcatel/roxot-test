@@ -6,13 +6,20 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
+
+var allowedActionTypes = map[string]bool{
+	"impression": true,
+	"click":      true,
+}
 
 type statResponse struct {
 	Status string `json:"status"`
@@ -25,9 +32,11 @@ func main() {
 	addr := getenv("HTTP_ADDR", ":7011")
 
 	db, err := sql.Open("pgx", dsn)
+
 	if err != nil {
 		log.Fatal(err)
 	}
+
 	defer db.Close()
 
 	if err := waitForDB(db); err != nil {
@@ -63,16 +72,45 @@ func handleStat(db *sql.DB) http.HandlerFunc {
 		}
 
 		query := r.URL.Query()
-		placementID := query.Get("placement")
-		actionType := query.Get("actionType")
 		requestID := query.Get("requestId")
-		occurredAt := parseOccurredAt(query.Get("occurredAt"))
 
-		price, _ := strconv.ParseFloat(query.Get("price"), 64)
-		priceCents := int(price)
+		placementID := strings.TrimSpace(query.Get("placement"))
+		if placementID == "" {
+			writeJSON(w, http.StatusBadRequest, statResponse{Status: "error", Error: "missing_placement"})
+			return
+		}
+
+		actionType := strings.TrimSpace(query.Get("actionType"))
+		if !allowedActionTypes[actionType] {
+			writeJSON(w, http.StatusBadRequest, statResponse{Status: "error", Error: "unknown_action_type"})
+			return
+		}
+
+		priceCents, err := parsePriceCents(query.Get("price"))
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, statResponse{Status: "error", Error: "invalid_price"})
+			return
+		}
+
+		occurredAt, err := parseOccurredAt(query.Get("occurredAt"))
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, statResponse{Status: "error", Error: "invalid_occurred_at"})
+			return
+		}
+
+		known, err := placementExists(r.Context(), db, placementID)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, statResponse{Status: "error", Error: "placement_lookup_failed"})
+			return
+		}
+
+		if !known {
+			writeJSON(w, http.StatusBadRequest, statResponse{Status: "error", Error: "unknown_placement"})
+			return
+		}
 
 		var eventID int64
-		err := db.QueryRowContext(
+		err = db.QueryRowContext(
 			r.Context(),
 			`INSERT INTO raw_events (placement_id, action_type, price_cents, occurred_at, request_id)
 			 VALUES ($1, $2, $3, $4, $5)
@@ -92,17 +130,51 @@ func handleStat(db *sql.DB) http.HandlerFunc {
 	}
 }
 
-func parseOccurredAt(raw string) time.Time {
+func placementExists(ctx context.Context, db *sql.DB, placementID string) (bool, error) {
+	var exists bool
+
+	err := db.QueryRowContext(
+		ctx,
+		`SELECT EXISTS (SELECT 1 FROM placements WHERE id = $1)`,
+		placementID,
+	).Scan(&exists)
+
+	return exists, err
+}
+
+func parsePriceCents(raw string) (int, error) {
+	raw = strings.TrimSpace(raw)
+
 	if raw == "" {
-		return time.Now().UTC()
+		return 0, nil
+	}
+
+	price, err := strconv.ParseFloat(raw, 64)
+
+	if err != nil {
+		return 0, err
+	}
+
+	if math.IsNaN(price) || math.IsInf(price, 0) || price < 0 {
+		return 0, errors.New("price must be a non-negative number")
+	}
+
+	return int(math.Round(price * 100)), nil
+}
+
+func parseOccurredAt(raw string) (time.Time, error) {
+	raw = strings.TrimSpace(raw)
+
+	if raw == "" {
+		return time.Now().UTC(), nil
 	}
 
 	parsed, err := time.Parse(time.RFC3339, raw)
 	if err != nil {
-		return time.Now().UTC()
+		return time.Time{}, err
 	}
 
-	return parsed.UTC()
+	return parsed.UTC(), nil
 }
 
 func nullableString(value string) sql.NullString {
@@ -139,6 +211,7 @@ func writeJSON(w http.ResponseWriter, status int, payload statResponse) {
 
 func getenv(key string, fallback string) string {
 	value := os.Getenv(key)
+
 	if value == "" {
 		return fallback
 	}
